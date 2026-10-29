@@ -1,0 +1,25 @@
+{
+  "name": "fucai-ssq",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/core",
+    "packages/cli",
+    "packages/mcp",
+    "functions",
+    "web"
+  ],
+  "scripts": {
+    "build": "npm run build -w @fucai/core && npm run build -w @fucai/cli && npm run build -w @fucai/mcp",
+    "test": "npm test -w @fucai/core",
+    "emulators": "firebase emulators:start --project demo-fucai-ssq",
+    "seed": "node scripts/seed.mjs",
+    "web": "npm run dev -w web",
+    "test:rules": "vitest run tests/rules.test.ts",
+    "test:auth": "node scripts/sync-e2e.mjs",
+    "build:functions": "npm run build -w functions",
+    "sync": "node scripts/sync.mjs",
+    "test:sync": "node scripts/sync-e2e.mjs",
+    "test:all": "npm test && npm run test:rules && npm run test:sync"
+  }
+}

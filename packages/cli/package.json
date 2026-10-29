@@ -1,0 +1,2 @@
+{ "name": "@fucai/cli", "version": "0.1.0", "type": "module", "bin": { "fucai": "dist/index.js" },
+  "scripts": { "build": "tsc -p ." }, "dependencies": { "@fucai/core": "0.1.0" }, "devDependencies": { "typescript": "^5.6.0" } }

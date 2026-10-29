@@ -1,0 +1,29 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Spark 免费方案：没有云函数。开奖数据、汇总、复盘结果只由 GitHub Actions 里的 scripts/sync.mjs（Admin SDK，绕过规则）写入
+    // 开奖数据、汇总：公开只读
+    match /ssq_draws/{id} { allow read: if true; allow write: if false; }
+    match /meta/{id} { allow read: if true; allow write: if false; }
+    // 注册名单（sync.mjs 按创建时间维护前 10 个 uid）：客户端完全不可访问。
+    // 注册在 Auth 端是开放的；第 11 个起由 sync.mjs 禁用，被禁用的账号无法再登录/刷新令牌
+    match /admin/{doc=**} { allow read, write: if false; }
+    // 每个用户只能访问自己的数据
+    match /users/{uid} {
+      function me() { return request.auth != null && request.auth.uid == uid; }
+      match /tickets/{tid} {
+        allow read, delete: if me();
+        allow create: if me()
+          && request.resource.data.keys().hasOnly(['red', 'blue', 'targetIssue', 'cost', 'createdAt', 'score', 'source'])
+          && request.resource.data.red is list && request.resource.data.red.size() == 6
+          && request.resource.data.blue is int && request.resource.data.blue >= 1 && request.resource.data.blue <= 16
+          && request.resource.data.targetIssue is string && request.resource.data.targetIssue.matches('^[0-9]{7}$')
+          && request.resource.data.cost == 2;
+        allow update: if false; // result（复盘结果）只由同步脚本写入；页面另在本地计算用于即时显示
+      }
+      // 以后的其他个人数据（tickets 除外，避免绕过上面的 update 限制）
+      match /{col}/{rest=**} { allow read, write: if me() && col != 'tickets'; }
+      allow read: if me();
+    }
+  }
+}
