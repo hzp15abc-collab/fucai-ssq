@@ -1,5 +1,6 @@
 name: sync-ssq
 # 双色球周二/四/日 21:15（北京时间）开奖。cron 用 UTC：21:45 BJT = 13:45 UTC，22:30 BJT = 14:30 UTC（同一天）
+# 流程：抓取 → 写 Firestore + 复盘 + 名额 → 生成 web/public/data/*.json → 构建网页 → 部署 Hosting（国内可直接访问静态数据）
 on:
   schedule:
     - cron: '45 13 * * 0,2,4'
@@ -14,14 +15,29 @@ concurrency: { group: sync-ssq, cancel-in-progress: false }
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: npm }
       - run: npm ci
       - run: npm run build -w @fucai/core
-      - name: sync draws + review tickets + enforce 10-user cap
+      - name: sync draws + review tickets + enforce 10-user cap + static JSON
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-        run: node scripts/sync.mjs ${{ inputs.delete_extra && '--delete-extra' || '' }}
+        run: node scripts/sync.mjs --static ${{ inputs.delete_extra && '--delete-extra' || '' }}
+      - name: build web（网页配置不是密钥，存在仓库变量里）
+        env:
+          VITE_USE_EMULATOR: 'false'
+          VITE_PROJECT_ID: ${{ vars.VITE_PROJECT_ID }}
+          VITE_API_KEY: ${{ vars.VITE_API_KEY }}
+          VITE_AUTH_DOMAIN: ${{ vars.VITE_AUTH_DOMAIN }}
+          VITE_APP_ID: ${{ vars.VITE_APP_ID }}
+        run: npm run build -w web
+      - name: deploy hosting
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > "$RUNNER_TEMP/sa.json"
+          GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/sa.json" npx -y firebase-tools@latest deploy --only hosting --project fucai-ssq --non-interactive -m "sync $(date -u +%FT%TZ)"
+          rm -f "$RUNNER_TEMP/sa.json"

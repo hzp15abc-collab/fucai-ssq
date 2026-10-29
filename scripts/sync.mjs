@@ -6,6 +6,7 @@
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { fetchHistory, toShortIssue, applyDraws, checkTicket, isFuyunActive } from '@fucai/core';
 
 export const MAX_USERS = Number(process.env.MAX_USERS ?? 10);
@@ -34,7 +35,17 @@ export async function syncLatest(fetchImpl = fetch) {
   // 复盘：本次抓到的期 + 最近 30 期（补录到已开奖期的票也会被处理；重复写无害）
   const issues = new Map([...summary.recent.slice(-30), ...fetched].map(d => [d.issue, d]));
   const reviewed = await reviewIssues([...issues.values()], summary.recent);
-  return { added, latestIssue: summary.latestIssue, reviewed };
+  return { added, latestIssue: summary.latestIssue, reviewed, summary: { ...summary, updatedAt: now }, checkedAt: now };
+}
+/** 4) 生成同源静态 JSON（国内无需访问 Google 即可看开奖/走势/选号）：web/public/data/ */
+export async function writeStatic(summary, checkedAt, dir = new URL('../web/public/data/', import.meta.url)) {
+  const all = (await db.collection(DRAWS).orderBy('issue').get()).docs.map(d => d.data());
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(new URL('ssq_summary.json', dir), JSON.stringify(summary));
+  writeFileSync(new URL('meta.json', dir), JSON.stringify({ latestIssue: summary.latestIssue, checkedAt, total: all.length }));
+  // 紧凑全量：[期号, 日期, 红1..红6, 蓝]
+  writeFileSync(new URL('draws.json', dir), JSON.stringify({ fields: ['issue', 'date', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'blue'], rows: all.map(d => [d.issue, d.date, ...d.red, d.blue]) }));
+  return all.length;
 }
 async function reviewIssues(draws, recent) {
   let n = 0;
@@ -69,6 +80,7 @@ export async function enforceCap(deleteExtra = false) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   const args = process.argv.slice(2);
   const r = args.includes('--cap-only') ? null : await syncLatest();
+  if (r && args.includes('--static')) console.log(`静态 JSON：${await writeStatic(r.summary, r.checkedAt)} 期 → web/public/data/`);
   if (r) console.log(`同步：新增 ${r.added.length} 期 ${r.added.map(d => d.issue).join(' ')}，最新 ${r.latestIssue}，复盘写入 ${r.reviewed} 注`);
   const c = await enforceCap(args.includes('--delete-extra'));
   console.log(`名额：共 ${c.total} 个账号，保留 ${c.kept}，本次处理 ${c.changed.length}`, c.changed.map(x => `${x.email}:${x.action}`).join(' '));

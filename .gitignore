@@ -5,3 +5,4 @@ lib
 .env.production
 *service-account*.json
 .firebase
+web/public/data/

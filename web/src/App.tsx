@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { statsFromSummary, generateCandidates, coverDesign, verifyCover, DEFAULT_FILTERS, nextIssue, nextDrawDate, summarizeTickets, checkTicket, isFuyunActive, isStale, expectedLatestDrawDate, type Draw, type FilterOptions, type Candidate, type Summary, type SavedTicket } from '@fucai/core';
-import { loadSummary, loadMeta, listTickets, saveTickets, deleteTicket, watchUser, register, login, logout, resetPassword, zhError } from './firebase';
+import { loadSummary, loadMeta, googleReachable, withTimeout } from './data';
+// Firestore/Auth 只在打开「我的号码」或保存时才加载（国内网络可能打不开 Google 服务）
+const fb = () => import('./firebase');
+const CLOUD_DOWN = '记录功能需要连接 Google 服务，国内网络暂时可能打不开，选号和看开奖不受影响';
 import type { User } from 'firebase/auth';
 
 const p2 = (n: number) => String(n).padStart(2, '0');
@@ -36,7 +39,8 @@ export default function App() {
   const [cover, setCover] = useState<{ list: number[][]; ok: boolean; ms: number } | null>(null);
 
   const say = (s: string) => { setToast(s); setTimeout(() => setToast(t => t === s ? '' : t), 3500); };
-  const reloadMy = () => user ? listTickets().then(setMy).catch(e => setErr(String(e))) : Promise.resolve();
+  const [cloud, setCloud] = useState<'idle' | 'checking' | 'up' | 'down'>('idle');
+  const reloadMy = () => user ? withTimeout(fb().then(m => m.listTickets()), 8000).then(setMy).catch(() => setCloud('down')) : Promise.resolve();
   // 开屏检查：库里最新一期是否早于「应已开奖」的日期（周二/四/日 21:15 后）
   const [gate, setGate] = useState<'checking' | 'stale' | 'ok' | 'done'>('checking'); const [upd, setUpd] = useState<number | null>(null);
   async function readData(first = false) {
@@ -46,12 +50,16 @@ export default function App() {
     if (!stale) { setGate('ok'); setTimeout(() => setGate(g => g === 'ok' ? 'done' : g), first ? 1200 : 900); } else setGate('stale');
     return s;
   }
-  useEffect(() => { readData(true).catch(e => { setErr(String(e)); setGate('done'); });
-    return watchUser(u => { setUser(u); if (u) listTickets().then(setMy).catch(e => setErr(String(e))); else setMy([]); }); }, []);
+  useEffect(() => { readData(true).catch(() => { setErr('暂时读不到开奖数据，请稍后点「刷新」'); setGate('done'); }); }, []);
+  useEffect(() => { if (tab !== 'mine' || cloud !== 'idle') return; setCloud('checking'); let off: (() => void) | undefined;
+    (async () => { if (!(await googleReachable())) return setCloud('down');
+      try { const m = await withTimeout(fb(), 8000); setCloud('up');
+        off = m.watchUser(u => { setUser(u); if (u) withTimeout(m.listTickets(), 8000).then(setMy).catch(() => setCloud('down')); else setMy([]); });
+      } catch { setCloud('down'); } })(); return () => off?.(); }, [tab]);
   async function onAuth(ev: React.FormEvent) { ev.preventDefault(); setAuthMsg('');
-    try { if (mode === 'login') await login(email, pw); else if (mode === 'register') await register(email, pw);
-      else { await resetPassword(email); setAuthMsg('如果这个邮箱注册过，重置密码的邮件已经发出（本地测试环境不真发信，链接在模拟器 Auth 页）'); } setPw(''); }
-    catch (e) { setAuthMsg(zhError(e)); } }
+    const m = await fb(); try { if (mode === 'login') await withTimeout(m.login(email, pw), 10000); else if (mode === 'register') await withTimeout(m.register(email, pw), 10000);
+      else { await withTimeout(m.resetPassword(email), 10000); setAuthMsg('如果这个邮箱注册过，重置密码的邮件已经发出（本地测试环境不真发信，链接在模拟器 Auth 页）'); } setPw(''); }
+    catch (e) { setAuthMsg((e as Error)?.message === 'timeout' || (e as any)?.code === 'auth/network-request-failed' ? CLOUD_DOWN : m.zhError(e)); } }
   const stats = useMemo(() => summary ? statsFromSummary(summary, win) : null, [summary, win]);
   const latest = draws.at(-1);
   const next = latest ? nextIssue(latest, Number(nextDrawDate(latest).slice(0, 4))) : '';
@@ -63,11 +71,12 @@ export default function App() {
   const sum = useMemo(() => summarizeTickets(myView), [myView]);
 
   async function onSave(list: { red: number[]; blue: number; score?: number }[], source: string) {
+    if (cloud === 'down') { say(CLOUD_DOWN); return false; }
     if (!user) { say('先登录才能保存哦'); setTab('mine'); return false; }
     if (!/^\d{7}$/.test(target)) { say('期号要 7 位数字，比如 ' + next); return false; }
-    try { await saveTickets(list, target, source); say(`存好了：${list.length} 注，第 ${target} 期`);
+    try { await withTimeout((await fb()).saveTickets(list, target, source), 10000); say(`存好了：${list.length} 注，第 ${target} 期`);
       await reloadMy(); return true; } // 已开奖期的票：页面先本地算出结果，下次同步时服务端写入 result
-    catch (e) { say('保存失败：' + String(e)); return false; }
+    catch { say('保存失败：' + CLOUD_DOWN); return false; }
   }
   function onManual() { try { const list = manual.split(/\n+/).filter(l => l.trim()).map(l => { const n = l.split(/[^0-9]+/).filter(Boolean).map(Number);
       if (n.length !== 7 || new Set(n.slice(0, 6)).size !== 6 || n.slice(0, 6).some(x => x < 1 || x > 33) || n[6] < 1 || n[6] > 16) throw new Error('这一行不对：' + l); return { red: n.slice(0, 6), blue: n[6] }; });
@@ -76,7 +85,7 @@ export default function App() {
   async function onFetch() { // 只重新读取 Firestore（数据由 GitHub Actions 定时写入）
     setBusy(true);
     try { const s = await readData(); await reloadMy(); say(isStale(s?.recent.at(-1)?.date) ? '还在更新中，稍后再看' : `已是最新（第 ${s?.latestIssue} 期）`); }
-    catch (e) { say('刷新失败：' + String(e)); } finally { setBusy(false); }
+    catch { say('暂时读不到开奖数据，请稍后再试'); } finally { setBusy(false); }
   }
   const opts = (): FilterOptions => ({ excludeRecent: f.recent && latest ? { numbers: latest.red, maxOverlap: 1 } : null, avoidAllBirthday: f.birthday,
     maxConsecutive: f.consec ? DEFAULT_FILTERS.maxConsecutive : null, sumRange: f.sum ? DEFAULT_FILTERS.sumRange : null, oddRange: f.odd ? DEFAULT_FILTERS.oddRange : null });
@@ -113,7 +122,7 @@ export default function App() {
   return <div className="app">
     <header className="top"><div className="brand"><span className="logo">福</span><div><b>双色球小助手</b><small>每周二、四、日晚 21:15 开奖</small></div></div>
       <button className="refresh" onClick={onFetch} disabled={busy}>{busy ? '刷新中…' : '↻ 刷新'}</button></header>
-    {err && <div className="toast err">读不到数据：{err}</div>}
+    {err && <div className="toast err">{err}</div>}
     {toast && <div className="toast">{toast}</div>}
     {gate === 'ok' && <div className="toast ok">✅ 已是最新：第 {summary?.latestIssue} 期</div>}
     {gate === 'stale' && <div className="mask"><div className="modal">
@@ -184,7 +193,9 @@ export default function App() {
     </>}
 
     {tab === 'mine' && <>
-      {user === null && <section className="card auth"><h2>{mode === 'login' ? '登录' : mode === 'register' ? '注册新账号' : '找回密码'}</h2>
+      {cloud === 'down' && <section className="card auth"><h2>📡 暂时连不上</h2><div className="muted">{CLOUD_DOWN}。</div>
+        <button className="ghost" onClick={() => { setCloud('idle'); setTab('home'); setTimeout(() => setTab('mine'), 0); }}>再试一次</button></section>}
+      {cloud !== 'down' && user === null && <section className="card auth"><h2>{mode === 'login' ? '登录' : mode === 'register' ? '注册新账号' : '找回密码'}</h2>
         <div className="muted">登录后能存下自己买的号码，开奖后自动帮你对奖。名额只有 10 个。</div>
         <form onSubmit={onAuth} className="authform">
           <input type="email" required placeholder="邮箱" value={email} onChange={e => setEmail(e.target.value)} autoComplete="email" />
@@ -196,9 +207,9 @@ export default function App() {
           {mode !== 'register' && <button className="link" onClick={() => setMode('register')}>没账号？注册</button>}
           {mode !== 'reset' && <button className="link" onClick={() => setMode('reset')}>忘记密码</button>}</div>
       </section>}
-      {user === undefined && <section className="card muted">加载中…</section>}
-      {user && <>
-        <section className="card me"><div className="who">👤 {user.email}<button className="link" onClick={() => logout()}>退出</button></div>
+      {cloud !== 'down' && user === undefined && <section className="card muted">连接中…</section>}
+      {cloud !== 'down' && user && <>
+        <section className="card me"><div className="who">👤 {user.email}<button className="link" onClick={() => fb().then(m => m.logout())}>退出</button></div>
           <div className="kpis"><div><small>买了</small><b>{sum.tickets}注</b><small>{sum.spend} 元</small></div><div><small>中了</small><b className="red">{sum.win}</b><small>元·税前</small></div>
             <div><small>回本率</small><b>{sum.roi == null ? '—' : sum.roi >= 10 ? `${Math.round(sum.roi)}倍` : `${(sum.roi * 100).toFixed(0)}%`}</b><small>已开奖 {sum.checkedSpend} 元</small></div><div><small>等开奖</small><b>{sum.pending}注</b><small>&nbsp;</small></div></div></section>
         <section className="card"><h3>我的号码</h3>
@@ -209,7 +220,7 @@ export default function App() {
               {d && <div className="draw mini"><span className="iss">开奖</span><Line red={d.red} blue={d.blue} sm /></div>}
               {list.map(t => <div className="tk" key={t.id}><span className="balls xs">{t.red.map(n => <Ball key={n} n={n} sm miss={!!d && !d.red.includes(n)} />)}<Ball n={t.blue} blue sm miss={!!d && d.blue !== t.blue} /></span>
                 <span className={`res${t.result && t.result.tier ? ' win' : ''}`}>{t.result ? (t.result.tier ? `${t.result.tierName} ${t.result.prize ?? '待公布'}元` : '没中') : '等开奖'}</span>
-                <button className="x" aria-label="删除" onClick={() => deleteTicket(t.id!).then(reloadMy)}>✕</button></div>)}</div>; })}
+                <button className="x" aria-label="删除" onClick={() => fb().then(m => m.deleteTicket(t.id!)).then(reloadMy).catch(() => say(CLOUD_DOWN))}>✕</button></div>)}</div>; })}
         </section>
         <details className="card"><summary>✍️ 手动录入买过的号码</summary><div className="muted small">一行一注：6 个红球 + 1 个蓝球，比如 <code>3 11 17 22 23 29 + 9</code></div>
           <textarea rows={3} value={manual} onChange={e => setManual(e.target.value)} placeholder="3 11 17 22 23 29 + 9" />
