@@ -3,7 +3,7 @@ import { statsFromSummary, generateCandidates, coverDesign, verifyCover, DEFAULT
 import { loadSummary, loadMeta, googleReachable, withTimeout } from './data';
 // Firestore/Auth 只在打开「我的号码」或保存时才加载（服务器可能暂时连不上）
 const fb = () => import('./firebase');
-const CLOUD_DOWN = '记录功能暂时连不上服务器，可以稍后再试。选号和看开奖不受影响。';
+const CLOUD_DOWN = '记录功能需要自备魔法才能使用，选号和看开奖不受影响。';
 import type { User } from 'firebase/auth';
 
 const p2 = (n: number) => String(n).padStart(2, '0');
