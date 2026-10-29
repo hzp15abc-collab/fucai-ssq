@@ -14,7 +14,7 @@ export async function loadSummary(): Promise<Summary | null> {
 export async function loadMeta(): Promise<{ latestIssue?: string; checkedAt?: number } | null> {
   return getJson<{ latestIssue?: string; checkedAt?: number }>('/data/meta.json').catch(() => null);
 }
-/** Google 服务（Firestore/Auth）是否可达：5 秒超时 */
+/** 记录服务（Firestore/Auth）是否可达：5 秒超时 */
 export async function googleReachable(ms = 5000): Promise<boolean> {
   if (import.meta.env.VITE_USE_EMULATOR !== 'false') return true;
   const c = new AbortController(); const t = setTimeout(() => c.abort(), ms);

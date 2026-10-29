@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { statsFromSummary, generateCandidates, coverDesign, verifyCover, DEFAULT_FILTERS, nextIssue, nextDrawDate, summarizeTickets, checkTicket, isFuyunActive, isStale, expectedLatestDrawDate, type Draw, type FilterOptions, type Candidate, type Summary, type SavedTicket } from '@fucai/core';
 import { loadSummary, loadMeta, googleReachable, withTimeout } from './data';
-// Firestore/Auth 只在打开「我的号码」或保存时才加载（国内网络可能打不开 Google 服务）
+// Firestore/Auth 只在打开「我的号码」或保存时才加载（服务器可能暂时连不上）
 const fb = () => import('./firebase');
-const CLOUD_DOWN = '记录功能需要连接 Google 服务，国内网络暂时可能打不开，选号和看开奖不受影响';
+const CLOUD_DOWN = '记录功能暂时连不上服务器，可以稍后再试。选号和看开奖不受影响。';
 import type { User } from 'firebase/auth';
 
 const p2 = (n: number) => String(n).padStart(2, '0');
@@ -193,7 +193,7 @@ export default function App() {
     </>}
 
     {tab === 'mine' && <>
-      {cloud === 'down' && <section className="card auth"><h2>📡 暂时连不上</h2><div className="muted">{CLOUD_DOWN}。</div>
+      {cloud === 'down' && <section className="card auth"><h2>📡 暂时连不上</h2><div className="muted">{CLOUD_DOWN}</div>
         <button className="ghost" onClick={() => { setCloud('idle'); setTab('home'); setTimeout(() => setTab('mine'), 0); }}>再试一次</button></section>}
       {cloud !== 'down' && user === null && <section className="card auth"><h2>{mode === 'login' ? '登录' : mode === 'register' ? '注册新账号' : '找回密码'}</h2>
         <div className="muted">登录后能存下自己买的号码，开奖后自动帮你对奖。名额只有 10 个。</div>
